@@ -43,7 +43,6 @@ from src.core.training import Trainer
 # Basic setting
 model_type = "svm"
 framework = "sklearn"
-task = "regression"
 n_trials = 100
 cv_splits = 3
 output_dir = Path("./outputs")
@@ -52,7 +51,6 @@ output_dir = Path("./outputs")
 tuner = Tuner(
     model_type=model_type,
     framework=framework,
-    task=task,
 )
 best_params = tuner.tune(
     X_train=X_train,
@@ -66,11 +64,9 @@ trainer = Trainer(
     model_type=model_type,
     params=best_params,
     framework=framework,
-    task=task,
 )
 trainer.train(
     (X_train, y_train),
-    (X_test, y_test),
 )
 
 # Model evaluation

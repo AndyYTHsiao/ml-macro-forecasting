@@ -1,19 +1,23 @@
+from collections.abc import Callable
+from typing import Any
+
 import numpy as np
 import optuna
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from typing import Any, Optional, Callable
 from sklearn.model_selection import KFold, TimeSeriesSplit, cross_val_score
+from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from .callback import TrainingCallback
-from .training import training_loop
-from .registry import get_model_class, get_sampler
-from .utils import calculate_metrics
+from torch import nn, optim
+from torch.utils.data import DataLoader
+
 from ..dataprep.preprocessing import set_up_dataloader
+from ..models.pytorch_models import set_pytorch_model
 from ..models.sklearn_models import set_sklearn_pipeline
-from ..models.pytorch_models import set_pytorch_model, set_loss_fn
+from .callback import TrainingCallback
+from .registry import get_model_class, get_sampler
+from .training import training_loop
+from .utils import calculate_metrics
+from ..core.registry import requires_scaling
 
 
 class Tuner:
@@ -21,20 +25,17 @@ class Tuner:
         self,
         model_type: str,
         framework: str = "sklearn",
-        task: str = "regression",
-        input_size: Optional[int] = None,
-        output_size: Optional[int] = None,
-        tuning_config: Optional[dict[str, Any]] = None,
-        loss_fn: Optional[nn.Module] = None,
-        device: Optional[torch.device] = None,
+        input_size: int | None = None,
+        output_size: int | None = None,
+        tuning_config: dict[str, Any] | None = None,
+        device: torch.device | None = None,
     ) -> None:
         """
-        Initialize the Tuner with the model type, framework, task, and tuning configuration.
+        Initialize the Tuner with the model type and tuning configuration.
 
         Args:
             model_type (str): Type of model to tune (e.g., "linear", "random_forest", "xgboost", "svm", "mlp", "lstm").
             framework (str): Framework to use ("sklearn" or "torch").
-            task (str): Task type ("regression", "binary", or "multiclass").
             tuning_config (dict[str, Any] | None): Custom tuning configuration. If None, uses the default TUNING_CONFIG.
             input_size (int | None): Input feature size for PyTorch models. If None, inferred during training.
             output_size (int | None): Output size for PyTorch models. If None, inferred during training.
@@ -42,7 +43,6 @@ class Tuner:
         """
         self.model_type = model_type
         self.framework = framework
-        self.task = task
         if tuning_config is None:
             from .search_spaces import TUNING_CONFIG
 
@@ -50,28 +50,23 @@ class Tuner:
         else:
             self.tuning_config = tuning_config
 
-        self.model_cls = get_model_class(self.model_type, self.framework, self.task)
+        self.model_cls = get_model_class(self.model_type, self.framework)
         self.input_size = input_size
         self.output_size = output_size
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
 
-        if self.framework == "torch":
-            self.loss_fn = loss_fn or set_loss_fn(task=self.task)
-        else:
-            self.loss_fn = None
-
     def _get_tuning_config(self, trial: optuna.Trial) -> dict[str, Any]:
-        if self.model_type not in self.tuning_config:
+        try:
+            config = self.tuning_config[self.model_type]
+        except KeyError as exc:
             raise ValueError(
-                f"Unsupported model type: {self.model_type}. Available types: {list(self.tuning_config.keys())}"
-            )
-        if self.task not in self.tuning_config[self.model_type]:
-            raise ValueError(
-                f"Unsupported task: {self.task} for model type: {self.model_type}. Available tasks: {list(self.tuning_config[self.model_type].keys())}"
-            )
-        return self.tuning_config[self.model_type][self.task](trial)
+                f"Unsupported model type: {self.model_type}. "
+                f"Available types: {list(self.tuning_config)}"
+            ) from exc
+
+        return config(trial)
 
     def _infer_input_output_size(self, train_loader: DataLoader) -> None:
         if self.input_size is None or self.output_size is None:
@@ -99,7 +94,6 @@ class Tuner:
             y_train (np.ndarray): Training target values.
             model_type (str): Type of model to tune.
             cv_splitter (KFold | TimeSeriesSplit): Cross-validation splitter.
-            task (str): Task type ('regression' or 'classification').
             scoring (str): Scoring metric for cross-validation.
             cv_splits (int): Number of cross-validation splits.
 
@@ -110,7 +104,6 @@ class Tuner:
             model_cls=self.model_cls,
             params=params,
             model_type=self.model_type,
-            task=self.task,
         )
         cv = cv_splitter(n_splits=cv_splits)
         if "early_stopping_rounds" in params and hasattr(
@@ -153,11 +146,7 @@ class Tuner:
             )
 
             preds = model.predict(X_val_fold)
-            metrics_dict = calculate_metrics(y_val_fold, preds, task=self.task)
-            if self.task == "regression":
-                val_scores.append(metrics_dict["mse"])
-            elif self.task == "binary" or self.task == "multiclass":
-                val_scores.append(-metrics_dict["accuracy"])
+            val_scores.append(calculate_metrics(y_val_fold, preds)["mse"])
 
         return np.mean(val_scores)
 
@@ -166,7 +155,7 @@ class Tuner:
         params: dict,
         X_train: np.ndarray,
         y_train: np.ndarray,
-        optimizer_cls: Optional[Callable[[nn.Module], optim.Optimizer]] = None,
+        optimizer_cls: Callable[[nn.Module], optim.Optimizer] | None = None,
         cv_splitter: KFold | TimeSeriesSplit | None = None,
         n_epochs: int = 50,
         cv_splits: int = 5,
@@ -198,10 +187,16 @@ class Tuner:
         loss_per_fold = []
         batch_size = params.get("batch_size", 32)
         lr = params.get("lr", 1e-3)
-        loss_fn = set_loss_fn(task=self.task)
+        loss_fn = nn.MSELoss()
         for train_idx, val_idx in cv.split(X_train):
             X_train_fold, y_train_fold = X_train[train_idx], y_train[train_idx]
             X_val_fold, y_val_fold = X_train[val_idx], y_train[val_idx]
+
+            if requires_scaling(self.model_type):
+                scaler = StandardScaler()
+                X_train_fold = scaler.fit_transform(X_train_fold)
+
+                X_val_fold = scaler.transform(X_val_fold)
 
             train_loader, val_loader = set_up_dataloader(
                 X_train_tensor=torch.tensor(X_train_fold, dtype=torch.float32),
@@ -223,22 +218,23 @@ class Tuner:
                 input_size=self.input_size,
                 output_size=self.output_size,
                 model_type=self.model_type,
-                task=self.task,
             ).to(self.device)
             optimizer = (optimizer_cls or optim.Adam)(self.model.parameters(), lr=lr)
             callback = TrainingCallback(
-                model=self.model, patience=patience, min_delta=min_delta
+                model=self.model,
+                patience=patience,
+                min_epochs=min_epochs,
+                min_delta=min_delta,
             )
             loss = training_loop(
                 self.model,
                 optimizer,
                 loss_fn,
+                self.device,
                 train_loader,
                 val_loader=val_loader,
                 callback=callback,
                 n_epochs=n_epochs,
-                min_epochs=min_epochs,
-                device=self.device,
                 return_preds=False,
             )
             loss_per_fold.append(loss)

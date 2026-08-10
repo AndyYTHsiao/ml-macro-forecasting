@@ -1,22 +1,22 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import numpy as np
-from copy import deepcopy
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
+
+import numpy as np
+import torch
+from torch import nn, optim
 from torch.utils.data import DataLoader
+
+from ..models.pytorch_models import set_pytorch_model
+from ..models.sklearn_models import set_sklearn_pipeline
+from .callback import TrainingCallback
+from .registry import get_model_class
 from .utils import (
+    calculate_metrics,
+    organize_in_out_sample_metrics,
     save_best_model,
     save_json,
     save_predictions,
-    calculate_metrics,
-    organize_in_out_sample_metrics,
 )
-from .callback import TrainingCallback
-from .registry import get_model_class
-from ..models.sklearn_models import set_sklearn_pipeline
-from ..models.pytorch_models import set_pytorch_model, set_loss_fn, logit_to_output
 
 
 class Trainer:
@@ -25,10 +25,9 @@ class Trainer:
         model_type: str,
         params: dict,
         framework: str = "sklearn",
-        task: str = "regression",
-        input_size: Optional[int] = None,
-        output_size: Optional[int] = None,
-        device: Optional[torch.device] = None,
+        input_size: int | None = None,
+        output_size: int | None = None,
+        device: torch.device | None = None,
     ) -> None:
         """
         Hybrid Trainer that supports sklearn pipelines and PyTorch models.
@@ -37,7 +36,6 @@ class Trainer:
             model_type (str): Type of model to initialize.
             params (dict): Dictionary containing model parameters.
             framework (str): Framework to use - "sklearn" or "torch".
-            task (str): Type of task - "regression", "binary", or "multiclass".
             input_size (Optional[int]): Number of input features (required for PyTorch models).
             output_size (Optional[int]): Number of output features (required for PyTorch models).
             device (Optional[torch.device]): Device to run the training on (CPU or GPU).
@@ -48,12 +46,11 @@ class Trainer:
         if self.framework not in {"sklearn", "torch"}:
             raise ValueError(f"Unsupported framework: {self.framework}")
 
-        self.task = task
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
 
-        self.model_cls = get_model_class(self.model_type, self.framework, self.task)
+        self.model_cls = get_model_class(self.model_type, self.framework)
         self.model = None
         self.input_size = input_size
         self.output_size = output_size
@@ -63,10 +60,6 @@ class Trainer:
         # Outputs
         self.train_preds = None
         self.test_preds = None
-        self.train_classes = None
-        self.test_classes = None
-        self.train_probs = None
-        self.test_probs = None
         self.metrics = None
 
     def _infer_input_output_size(self, train_loader: DataLoader) -> None:
@@ -87,8 +80,6 @@ class Trainer:
         self,
         X_train: np.ndarray,
         y_train: np.ndarray,
-        X_test: np.ndarray,
-        y_test: np.ndarray,
     ) -> None:
         """
         Train sklearn models (with optional early stopping for e.g. XGBoost).
@@ -96,31 +87,24 @@ class Trainer:
         Args:
             X_train (np.ndarray): Training features.
             y_train (np.ndarray): Training targets.
-            X_test (np.ndarray): Testing features.
-            y_test (np.ndarray): Testing targets.
         """
-        self.model = set_sklearn_pipeline(
-            self.model_cls, self.params, self.model_type, self.task
-        )
-
-        if "early_stopping_rounds" in self.params and hasattr(
-            self.model.named_steps["model"], "fit"
-        ):
-            self.model.fit(
-                X_train,
-                y_train,
-                model__eval_set=[(X_test, y_test)],
-                model__verbose=False,
-            )
-        else:
-            self.model.fit(X_train, y_train)
+        # Early stopping is used inside temporal CV during tuning.  The final
+        # estimator is fitted on all training observations without consulting
+        # the test set.
+        final_params = {
+            key: value
+            for key, value in self.params.items()
+            if key != "early_stopping_rounds"
+        }
+        self.model = set_sklearn_pipeline(self.model_cls, final_params, self.model_type)
+        self.model.fit(X_train, y_train)
 
     def _train_torch(
         self,
         train_loader: DataLoader,
-        test_loader: DataLoader,
-        optimizer_cls: Optional[Callable[[nn.Module], optim.Optimizer]] = None,
-        loss_fn: Optional[nn.Module] = None,
+        val_loader: DataLoader | None = None,
+        optimizer_cls: Callable[[nn.Module], optim.Optimizer] | None = None,
+        loss_fn: nn.Module | None = None,
         n_epochs: int = 50,
         min_epochs: int = 1,
         patience: int = 5,
@@ -149,15 +133,15 @@ class Trainer:
             self.input_size,
             self.output_size,
             self.model_type,
-            self.task,
-        )
+        ).to(self.device)
         self.optimizer = (optimizer_cls or optim.Adam)(
             self.model.parameters(), lr=self.params.get("lr", 1e-3)
         )
-        self.loss_fn = loss_fn or set_loss_fn(task=self.task)
+        self.loss_fn = loss_fn or nn.MSELoss()
         self.callback = TrainingCallback(
             self.model,
             patience=patience,
+            min_epochs=min_epochs,
             min_delta=min_delta,
             logger_name=logger_name,
             metric_mode=metric_mode,
@@ -168,21 +152,20 @@ class Trainer:
             self.model,
             self.optimizer,
             self.loss_fn,
+            self.device,
             train_loader,
-            test_loader,
+            val_loader,
             self.callback,
             n_epochs=n_epochs,
-            min_epochs=min_epochs,
-            device=self.device,
             return_preds=False,
         )
 
     def train(
         self,
         train_data: tuple[np.ndarray, np.ndarray] | DataLoader,
-        test_data: tuple[np.ndarray, np.ndarray] | DataLoader,
-        optimizer_cls: Optional[Callable[[nn.Module], optim.Optimizer]] = None,
-        loss_fn: Optional[nn.Module] = None,
+        validation_data: tuple[np.ndarray, np.ndarray] | DataLoader | None = None,
+        optimizer_cls: Callable[[nn.Module], optim.Optimizer] | None = None,
+        loss_fn: nn.Module | None = None,
         min_delta: float = 0.0,
         n_epochs: int = 50,
         patience: int = 5,
@@ -197,7 +180,7 @@ class Trainer:
 
         Args:
             train_data (tuple[np.ndarray, np.ndarray] | DataLoader): Training data.
-            test_data (tuple[np.ndarray, np.ndarray] | DataLoader): Testing data.
+            validation_data: Optional validation data for PyTorch early stopping. This must not be the held-out test set.
             optimizer_cls (Optional[Callable[[nn.Module], optim.Optimizer]]): Optimizer class for PyTorch models.
             loss_fn (Optional[nn.Module]): Loss function for PyTorch models.
             min_delta (float): Minimum change in the monitored metric to qualify as an improvement.
@@ -210,14 +193,12 @@ class Trainer:
             enable_logging (bool): Whether to enable logging during training.
         """
         if self.framework == "sklearn":
-            self._train_sklearn(
-                train_data[0], train_data[1], test_data[0], test_data[1]
-            )
+            self._train_sklearn(train_data[0], train_data[1])
         elif self.framework == "torch":
             self._infer_input_output_size(train_data)
             self._train_torch(
                 train_data,
-                test_data,
+                validation_data,
                 optimizer_cls=optimizer_cls,
                 loss_fn=loss_fn,
                 n_epochs=n_epochs,
@@ -238,7 +219,7 @@ class Trainer:
         y_train: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
-        rounding: Optional[int] = None,
+        rounding: int | None = None,
     ) -> None:
         """
         Generate in-sample and out-of-sample predictions based on task type.
@@ -246,55 +227,25 @@ class Trainer:
         if self.framework == "sklearn":
             self.train_preds = self.model.predict(X_train)
             self.test_preds = self.model.predict(X_test)
-        elif self.framework == "torch":
+        else:
             self.model.eval()
             with torch.no_grad():
-                X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(
-                    self.device
+                train_tensor = torch.tensor(
+                    X_train, dtype=torch.float32, device=self.device
                 )
-                X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(
-                    self.device
+                test_tensor = torch.tensor(
+                    X_test, dtype=torch.float32, device=self.device
                 )
 
-                train_output = self.model(X_train_tensor)
-                test_output = self.model(X_test_tensor)
-
-                if self.task == "regression":
-                    self.train_preds = train_output.squeeze().cpu().numpy()
-                    self.test_preds = test_output.squeeze().cpu().numpy()
-
-                elif self.task == "binary":
-                    # Assume model outputs raw logits -> apply sigmoid
-                    train_probs = torch.sigmoid(train_output)
-                    test_probs = torch.sigmoid(test_output)
-
-                    self.train_preds = train_probs.squeeze().cpu().numpy()
-                    self.test_preds = test_probs.squeeze().cpu().numpy()
-
-                    # Optionally also store hard class predictions (0 or 1)
-                    self.train_classes = (self.train_preds >= 0.5).astype(int)
-                    self.test_classes = (self.test_preds >= 0.5).astype(int)
-
-                elif self.task == "multiclass":
-                    # Assume model outputs raw logits -> apply softmax
-                    train_probs = torch.softmax(train_output, dim=1)
-                    test_probs = torch.softmax(test_output, dim=1)
-
-                    self.train_preds = train_probs.cpu().numpy()
-                    self.test_preds = test_probs.cpu().numpy()
-
-                    # Optionally also store predicted class labels
-                    self.train_classes = train_probs.argmax(dim=1).cpu().numpy()
-                    self.test_classes = test_probs.argmax(dim=1).cpu().numpy()
-                else:
-                    raise ValueError(f"Unsupported model type: {self.model_type}")
+                self.train_preds = self.model(train_tensor).squeeze(-1).cpu().numpy()
+                self.test_preds = self.model(test_tensor).squeeze(-1).cpu().numpy()
 
         # calculate metrics
         insample_metrics = calculate_metrics(
-            y_train, self.train_preds, rounding=rounding, task=self.task
+            y_train, self.train_preds, rounding=rounding
         )
         outsample_metrics = calculate_metrics(
-            y_test, self.test_preds, rounding=rounding, task=self.task
+            y_test, self.test_preds, rounding=rounding
         )
         self.metrics = organize_in_out_sample_metrics(
             insample_metrics, outsample_metrics
@@ -303,7 +254,7 @@ class Trainer:
     def save_results(
         self,
         output_dir: Path,
-        suffix: Optional[str] = None,
+        suffix: str | None = None,
     ) -> None:
         """
         Save the best model, predictions, configuration, and metrics to the experiment directory.
@@ -326,12 +277,11 @@ def training_loop(
     model: nn.Module,
     optimizer: optim.Optimizer,
     loss_fn: nn.Module,
+    device: torch.device,
     train_loader: DataLoader,
     val_loader: DataLoader | None = None,
     callback: TrainingCallback | None = None,
     n_epochs: int = 50,
-    min_epochs: int = 1,
-    device: torch.device = torch.device("cpu"),
     return_preds: bool = False,
 ) -> float | tuple[float, np.ndarray, np.ndarray]:
     """
@@ -346,7 +296,6 @@ def training_loop(
         val_loader (DataLoader | None): DataLoader for validation data. If None, no validation is performed.
         callback (TrainingCallback | None): Callback for early stopping and logging.
         n_epochs (int): Maximum number of epochs to train.
-        min_epochs (int): Minimum number of epochs before early stopping can occur.
         device (torch.device): Device to run the training on (CPU or GPU).
         return_preds (bool): If True, return predictions on the validation set.
 
@@ -354,79 +303,91 @@ def training_loop(
         float | tuple[float, np.ndarray, np.ndarray]: Best validation loss (and predictions and targets if return_preds is True).
     """
     best_loss = float("inf")
-    best_state = None
 
     for epoch in range(n_epochs):
         # --- Training ---
         model.train()
         train_loss = 0.0
+        n_train = 0
         for x_batch, y_batch in train_loader:
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            batch_n = x_batch.size(0)
+
             optimizer.zero_grad()
-            outputs = model(x_batch)
-            outputs = logit_to_output(outputs, task=model.task)
+            outputs = model(x_batch).squeeze(-1)
+
+            assert outputs.shape == y_batch.shape, (
+                f"{outputs.shape=} != {y_batch.shape=}"
+            )
+
             loss = loss_fn(outputs, y_batch)
             loss.backward()
             optimizer.step()
-            train_loss += loss.item()
 
-        train_loss /= len(train_loader)
+            train_loss += loss.item() * batch_n
+            n_train += batch_n
+
+        train_loss /= n_train
 
         # --- Validation ---
         val_loss = None
-        fold_preds, fold_targets = [], []
         if val_loader is not None:
             model.eval()
             val_loss = 0.0
+            n_val = 0
+
             with torch.no_grad():
                 for x_batch, y_batch in val_loader:
                     x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                    outputs = model(x_batch)
-                    outputs = logit_to_output(outputs, task=model.task)
-                    val_loss_batch = loss_fn(outputs, y_batch).item()
-                    val_loss += val_loss_batch
-                    if return_preds:
-                        fold_preds.append(outputs.detach().cpu())
-                        fold_targets.append(y_batch.detach().cpu())
-            val_loss /= len(val_loader)
+                    batch_n = x_batch.size(0)
 
-            # --- Track best model by validation loss ---
-            if val_loss < best_loss:
-                best_loss = val_loss
-                best_state = deepcopy(model.state_dict())
+                    outputs = model(x_batch).squeeze(-1)
+                    assert outputs.shape == y_batch.shape, (
+                        f"{outputs.shape=} != {y_batch.shape=}"
+                    )
+
+                    loss = loss_fn(outputs, y_batch)
+                    val_loss += loss.item() * batch_n
+                    n_val += batch_n
+
+            val_loss /= n_val
 
             # --- Early stopping on validation loss ---
-            if (
-                callback
-                and epoch >= min_epochs
-                and callback.should_stop(epoch, val_loss)
-            ):
+            if callback and callback.should_stop(epoch, val_loss):
                 break
 
         else:
-            # --- No validation: track best model by training loss ---
-            if train_loss < best_loss:
-                best_loss = train_loss
-                best_state = deepcopy(model.state_dict())
-
             # --- Early stopping on training loss ---
-            if (
-                callback
-                and epoch >= min_epochs
-                and callback.should_stop(epoch, train_loss)
-            ):
+            if callback and callback.should_stop(epoch, train_loss):
                 break
 
     # --- Restore best model ---
-    if best_state is not None:
-        model.load_state_dict(best_state)
-        if callback:
-            callback.restore_best_model()
-
-    # --- Return ---
-    if return_preds and val_loader is not None:
-        preds = torch.cat(fold_preds).numpy()
-        targets = torch.cat(fold_targets).numpy()
-        return best_loss, preds, targets
+    if callback and callback.get_best_model_state_dict is not None:
+        callback.restore_best_model()
+        best_loss = callback.get_best_score
     else:
-        return best_loss
+        best_loss = val_loss if val_loader is not None else train_loss
+
+    # --- Return predictions from best model ---
+    if return_preds and val_loader is not None:
+        model.eval()
+
+        preds = []
+        targets = []
+
+        with torch.no_grad():
+            for x_batch, y_batch in val_loader:
+                x_batch = x_batch.to(device)
+                y_batch = y_batch.to(device)
+
+                outputs = model(x_batch).squeeze(-1)
+
+                preds.append(outputs.cpu())
+                targets.append(y_batch.cpu())
+
+        preds = torch.cat(preds).numpy()
+        targets = torch.cat(targets).numpy()
+
+        return best_loss, preds, targets
+
+    return best_loss

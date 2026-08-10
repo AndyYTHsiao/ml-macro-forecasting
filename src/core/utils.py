@@ -1,23 +1,19 @@
 import json
-import joblib
-import torch
-import torch.nn as nn
-import numpy as np
 import random
-from typing import Any, Optional
+from typing import Any
+
+import joblib
+import numpy as np
+import torch
 from safetensors.torch import save_model
-from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
-    r2_score,
-    mean_squared_error,
     mean_absolute_error,
+    mean_squared_error,
+    r2_score,
     root_mean_squared_error,
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
 )
+from sklearn.pipeline import Pipeline
+from torch import nn
 
 
 def set_all_seeds(seed: int = 42) -> None:
@@ -36,12 +32,8 @@ def set_all_seeds(seed: int = 42) -> None:
 
 
 def calculate_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    rounding: Optional[int] = None,
-    task: str = "regression",  # "regression", "binary", or "multiclass"
-    y_proba: Optional[np.ndarray] = None,  # needed for ROC-AUC
-) -> dict:
+    y_true: np.ndarray, y_pred: np.ndarray, rounding: int | None = None
+) -> dict[str, float]:
     """
     Calculate evaluation metrics for regression, binary, or multiclass classification.
 
@@ -49,54 +41,20 @@ def calculate_metrics(
         y_true (np.ndarray): True values.
         y_pred (np.ndarray): Predicted values (discrete for classification).
         rounding (Optional[int]): Decimal rounding for metrics.
-        task (str): Type of task: "regression", "binary", or "multiclass".
-        y_proba (Optional[np.ndarray]): Predicted probabilities (for ROC-AUC).
 
     Returns:
         dict: Dictionary containing evaluation metrics.
     """
-    metrics = {}
-
-    if task == "regression":
-        metrics["r2"] = r2_score(y_true, y_pred)
-        metrics["mse"] = mean_squared_error(y_true, y_pred)
-        metrics["rmse"] = root_mean_squared_error(y_true, y_pred)
-        metrics["mae"] = mean_absolute_error(y_true, y_pred)
-
-    elif task == "binary":
-        metrics["accuracy"] = accuracy_score(y_true, y_pred)
-        metrics["precision"] = precision_score(y_true, y_pred, zero_division=0)
-        metrics["recall"] = recall_score(y_true, y_pred, zero_division=0)
-        metrics["f1"] = f1_score(y_true, y_pred, zero_division=0)
-        if y_proba is not None:
-            metrics["roc_auc"] = roc_auc_score(y_true, y_proba)
-
-    elif task == "multiclass":
-        metrics["accuracy"] = accuracy_score(y_true, y_pred)
-        metrics["precision_macro"] = precision_score(
-            y_true, y_pred, average="macro", zero_division=0
-        )
-        metrics["recall_macro"] = recall_score(
-            y_true, y_pred, average="macro", zero_division=0
-        )
-        metrics["f1_macro"] = f1_score(y_true, y_pred, average="macro", zero_division=0)
-        metrics["f1_weighted"] = f1_score(
-            y_true, y_pred, average="weighted", zero_division=0
-        )
-        if y_proba is not None:
-            try:
-                metrics["roc_auc_macro"] = roc_auc_score(
-                    y_true, y_proba, multi_class="ovr", average="macro"
-                )
-            except ValueError:
-                pass  # in case probabilities don't cover all classes
-
-    else:
-        raise ValueError(f"Unsupported task type: {task}")
+    metrics = {
+        "r2": r2_score(y_true, y_pred),
+        "mse": mean_squared_error(y_true, y_pred),
+        "rmse": root_mean_squared_error(y_true, y_pred),
+        "mae": mean_absolute_error(y_true, y_pred),
+    }
 
     # Optional rounding
     if rounding is not None:
-        metrics = {k: round(v, rounding) for k, v in metrics.items()}
+        metrics = {name: round(value, rounding) for name, value in metrics.items()}
 
     return metrics
 

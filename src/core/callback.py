@@ -1,13 +1,15 @@
-import os
 import logging
-import torch.nn as nn
+import os
 from copy import deepcopy
+
+from torch import nn
 
 
 class EarlyStopping:
     def __init__(
         self,
         patience: int = 5,
+        min_epochs: int = 1,
         min_delta: float = 0.0,
         logger_name: str = "training",
         metric_mode: str = "min",
@@ -19,6 +21,7 @@ class EarlyStopping:
 
         Args:
             patience (int): Number of epochs with no improvement after which training will be stopped.
+            min_epochs (int): Minimum number of epochs to run before considering early stopping.
             min_delta (float): Minimum change in the monitored quantity to qualify as an improvement.
             logger_name (str): Name of the log file if logging is enabled.
             metric_mode (str): Mode for the monitored metric, either 'min' or 'max'.
@@ -28,6 +31,9 @@ class EarlyStopping:
         if patience <= 0:
             raise ValueError("patience must be positive.")
 
+        if min_epochs < 1:
+            raise ValueError("min_epochs must be at least 1.")
+
         if min_delta < 0:
             raise ValueError("min_delta must be non-negative.")
 
@@ -35,6 +41,7 @@ class EarlyStopping:
             raise ValueError("metric_mode must be either 'min' or 'max'.")
 
         self.patience = patience
+        self.min_epochs = min_epochs
         self.min_delta = min_delta
         self.metric_mode = metric_mode
         self.counter = 0
@@ -65,23 +72,23 @@ class EarlyStopping:
             model (nn.Module): The model being trained.
 
         Returns:
-            bool: True if training should stop, False otherwise.
+            should_stop (bool): True if training should stop, False otherwise.
         """
         # Skip early stopping if not enabled
         if not self.enable_early_stopping:
             if self.logger:
                 self.logger.info(
-                    f"Early stopping is disabled. Epoch {epoch} | score: {score:.4f}"
+                    f"Early stopping is disabled. Epoch {epoch + 1} | score: {score:.4f}"
                 )
             return False
 
-        score_improved = False
+        score_improved = (
+            score < self.best_score - self.min_delta
+            if self.metric_mode == "min"
+            else score > self.best_score + self.min_delta
+        )
 
-        if self.metric_mode == "min":
-            score_improved = score < self.best_score - self.min_delta
-        else:
-            score_improved = score > self.best_score + self.min_delta
-
+        # Reset the counter and save the best model, loss, and epoch if the loss improved
         if score_improved:
             self.counter = 0
             self.best_score = score
@@ -90,19 +97,28 @@ class EarlyStopping:
 
             if self.logger:
                 self.logger.info(
-                    f"Epoch {epoch} | Score improved | score: {score:.4f} | Counter reset."
+                    f"Epoch {epoch + 1} | Score improved | score: {score:.4f} | Counter reset."
                 )
+
+        # Counter is not incremented if minimum epochs have not been reached
+        elif epoch + 1 < self.min_epochs:
+            if self.logger:
+                self.logger.info(
+                    f"Epoch {epoch + 1} | No improvement | score: {score:.4f} | Minimum epochs not reached."
+                )
+
         else:
             self.counter += 1
             if self.logger:
                 self.logger.info(
-                    f"Epoch {epoch} | No improvement | score: {score:.4f} | Counter: {self.counter}/{self.patience}"
+                    f"Epoch {epoch + 1} | No improvement | score: {score:.4f} | Counter: {self.counter}/{self.patience}"
                 )
 
+        # Early stopping is triggered if the counter exceeds the patience
         if self.counter >= self.patience:
             if self.logger:
                 self.logger.info(
-                    f"Early stopping triggered at epoch {epoch}. Best score: {self.best_score:.4f} at epoch {self.best_epoch}."
+                    f"Early stopping triggered at epoch {epoch + 1}. Best score: {self.best_score:.4f} at epoch {self.best_epoch + 1}."
                 )
             return True
 
@@ -114,6 +130,7 @@ class TrainingCallback:
         self,
         model: nn.Module,
         patience: int = 5,
+        min_epochs: int = 1,
         min_delta: float = 0.0,
         logger_name: str = "training",
         metric_mode: str = "min",
@@ -126,6 +143,7 @@ class TrainingCallback:
         Args:
             model: The model to be trained.
             patience (int): Number of epochs with no improvement after which training will be stopped.
+            min_epochs (int): Minimum number of epochs to run before considering early stopping.
             min_delta (float): Minimum change in the monitored quantity to qualify as an improvement.
             logger_name (str): Name of the log file if logging is enabled.
             metric_mode (str): Mode for the monitored metric, either 'min' or 'max'.
@@ -135,6 +153,7 @@ class TrainingCallback:
         self.model = model
         self.early_stopping = EarlyStopping(
             patience=patience,
+            min_epochs=min_epochs,
             min_delta=min_delta,
             logger_name=logger_name,
             metric_mode=metric_mode,
@@ -156,7 +175,7 @@ class TrainingCallback:
         return self.early_stopping(epoch, score, self.model)
 
     @property
-    def get_best_model_state_dict(self) -> dict:
+    def get_best_model_state_dict(self) -> dict | None:
         """
         Get the best model state based on early stopping criteria.
 
@@ -166,7 +185,7 @@ class TrainingCallback:
         return self.early_stopping.best_model_state_dict
 
     @property
-    def get_best_epoch(self) -> int:
+    def get_best_epoch(self) -> int | None:
         """
         Get the epoch at which the best model state was saved.
 
