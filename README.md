@@ -103,3 +103,9 @@ trainer.train((X_train, y_train))
 trainer.evaluate(X_train, y_train, X_test, y_test, rounding=4)
 trainer.save_results(Path("./outputs/sklearn/svm"))
 ```
+
+## Tests
+
+```
+uv run --with pytest pytest
+```
