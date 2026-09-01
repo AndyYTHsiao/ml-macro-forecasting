@@ -84,46 +84,46 @@ if __name__ == "__main__":
         )
 
         # --- Sklearn models ---
-        # for model_type in ["linear", "random_forest", "xgboost", "svm"]:
-        #     framework = "sklearn"
+        for model_type in ["linear", "random_forest", "xgboost", "svm"]:
+            framework = "sklearn"
 
-        #     # --- Hyperparameter tuning ---
-        #     print(f"Tuning {model_type}...")
-        #     tuner = Tuner(
-        #         model_type=model_type,
-        #         framework=framework,
-        #     )
-        #     best_params = tuner.tune(
-        #         X_train=X_train_seq,
-        #         y_train=y_train_seq,
-        #         n_trials=n_trials,
-        #         seed=seed,
-        #         direction=direction,
-        #         scoring=scoring,
-        #         cv_splits=cv_splits,
-        #     )
+            # --- Hyperparameter tuning ---
+            print(f"Tuning {model_type}...")
+            tuner = Tuner(
+                model_type=model_type,
+                framework=framework,
+            )
+            best_params = tuner.tune(
+                X_train=X_train_seq,
+                y_train=y_train_seq,
+                n_trials=n_trials,
+                seed=seed,
+                direction=direction,
+                scoring=scoring,
+                cv_splits=cv_splits,
+            )
 
-        #     # --- Initialize Trainer ---
-        #     trainer = Trainer(
-        #         model_type=model_type,
-        #         params=best_params,
-        #         framework=framework,
-        #     )
+            # --- Initialize Trainer ---
+            trainer = Trainer(
+                model_type=model_type,
+                params=best_params,
+                framework=framework,
+            )
 
-        #     trainer.train(
-        #         (X_train_seq, y_train_seq),
-        #     )
-        #     trainer.evaluate(
-        #         X_train=X_train_seq,
-        #         y_train=y_train_seq,
-        #         X_test=X_test_seq,
-        #         y_test=y_test_seq,
-        #         rounding=4,
-        #     )
-        #     trainer.save_results(
-        #         output_dir / framework / model_type, suffix=f"lb{lookback}m"
-        #     )
-        #     print(f"[✅] Finished training {model_type}.")
+            trainer.train(
+                (X_train_seq, y_train_seq),
+            )
+            trainer.evaluate(
+                X_train=X_train_seq,
+                y_train=y_train_seq,
+                X_test=X_test_seq,
+                y_test=y_test_seq,
+                rounding=4,
+            )
+            trainer.save_results(
+                output_dir / framework / model_type, suffix=f"lb{lookback}m"
+            )
+            print(f"[✅] Finished training {model_type}.")
 
         # --- Non-sequence deep learning models ---
         for model_type in ["mlp"]:
@@ -184,71 +184,71 @@ if __name__ == "__main__":
             print(f"[✅] Finished training {model_type}.")
 
     # --- Sequence deep learning models ---
-    # for lookback in lookback_windows:
-    #     print(f"Running experiments with lookback = {lookback}")
-    #     # --- Create sequences and dataloaders ---
-    #     X_train_seq, y_train_seq = create_sequences(
-    #         X_train,
-    #         y_train,
-    #         lookback=lookback,
-    #         forecast_horizon=forecast_horizon,
-    #         gap=gap,
-    #         return_type="np",
-    #         flatten=False,
-    #     )
-    #     X_test_seq, y_test_seq = create_sequences(
-    #         X_test,
-    #         y_test,
-    #         lookback=lookback,
-    #         forecast_horizon=forecast_horizon,
-    #         gap=gap,
-    #         return_type="np",
-    #         flatten=False,
-    #     )
+    for lookback in lookback_windows:
+        print(f"Running experiments with lookback = {lookback}")
+        # --- Create sequences and dataloaders ---
+        X_train_seq, y_train_seq = create_sequences(
+            X_train,
+            y_train,
+            lookback=lookback,
+            forecast_horizon=forecast_horizon,
+            gap=gap,
+            return_type="np",
+            flatten=False,
+        )
+        X_test_seq, y_test_seq = create_sequences(
+            X_test,
+            y_test,
+            lookback=lookback,
+            forecast_horizon=forecast_horizon,
+            gap=gap,
+            return_type="np",
+            flatten=False,
+        )
 
-    #     train_loader, test_loader = set_up_dataloader(
-    #         torch.tensor(X_train_seq, dtype=torch.float32),
-    #         torch.tensor(y_train_seq, dtype=torch.float32),
-    #         torch.tensor(X_test_seq, dtype=torch.float32),
-    #         torch.tensor(y_test_seq, dtype=torch.float32),
-    #         batch_size=batch_size,
-    #         device=device,
-    #     )
+        train_loader, test_loader = set_up_dataloader(
+            torch.tensor(X_train_seq, dtype=torch.float32),
+            torch.tensor(y_train_seq, dtype=torch.float32),
+            torch.tensor(X_test_seq, dtype=torch.float32),
+            torch.tensor(y_test_seq, dtype=torch.float32),
+            batch_size=batch_size,
+            device=device,
+        )
 
-    #     framework = "torch"
-    #     for model_type in ["lstm"]:
-    #         # --- Hyperparameter tuning ---
-    #         print(f"Tuning {model_type}...")
-    #         tuner = Tuner(
-    #             model_type=model_type,
-    #             framework=framework,
-    #             device=device,
-    #         )
-    #         best_params = tuner.tune(
-    #             X_train=X_train_seq,
-    #             y_train=y_train_seq,
-    #             n_trials=n_trials,
-    #             cv_splits=cv_splits,
-    #         )
+        framework = "torch"
+        for model_type in ["lstm"]:
+            # --- Hyperparameter tuning ---
+            print(f"Tuning {model_type}...")
+            tuner = Tuner(
+                model_type=model_type,
+                framework=framework,
+                device=device,
+            )
+            best_params = tuner.tune(
+                X_train=X_train_seq,
+                y_train=y_train_seq,
+                n_trials=n_trials,
+                cv_splits=cv_splits,
+            )
 
-    #         # --- Initialize Trainer ---
-    #         trainer = Trainer(
-    #             model_type=model_type,
-    #             params=best_params,
-    #             framework=framework,
-    #         )
+            # --- Initialize Trainer ---
+            trainer = Trainer(
+                model_type=model_type,
+                params=best_params,
+                framework=framework,
+            )
 
-    #         trainer.train(
-    #             train_loader,
-    #         )
-    #         trainer.evaluate(
-    #             X_train=X_train_seq,
-    #             y_train=y_train_seq,
-    #             X_test=X_test_seq,
-    #             y_test=y_test_seq,
-    #             rounding=4,
-    #         )
-    #         trainer.save_results(
-    #             output_dir / framework / model_type, suffix=f"lb{lookback}m"
-    #         )
-    #         print(f"[✅] Finished training {model_type}.")
+            trainer.train(
+                train_loader,
+            )
+            trainer.evaluate(
+                X_train=X_train_seq,
+                y_train=y_train_seq,
+                X_test=X_test_seq,
+                y_test=y_test_seq,
+                rounding=4,
+            )
+            trainer.save_results(
+                output_dir / framework / model_type, suffix=f"lb{lookback}m"
+            )
+            print(f"[✅] Finished training {model_type}.")

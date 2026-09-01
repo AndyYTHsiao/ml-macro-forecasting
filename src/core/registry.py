@@ -61,7 +61,6 @@ def get_sampler(model_type: str, seed: int = 42) -> BaseSampler:
     Returns:
         BaseSampler: An instance of an Optuna sampler.
     """
-    """Build the Optuna sampler used by a model family."""
     if model_type == "svm":
         return CmaEsSampler(seed=seed, sigma0=1.0, warn_independent_sampling=False)
 

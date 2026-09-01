@@ -1,6 +1,7 @@
 # Overview
 
-This directory contains datasets or modeling and forecasting key macroeconomic indicators (CPI YoY and unemployment rate) for Hong Kong and Taiwan. To benchmark model performance, [`analyst_forecasts.csv`](./analyst_forecasts.csv) includes analyst forecasts sourced from Bloomberg.
+This directory contains datasets for modeling and forecasting key macroeconomic indicators (CPI year-over-year growth and unemployment rates) for Hong Kong and Taiwan.
+To benchmark model performance, [`analyst_forecasts.csv`](./analyst_forecasts.csv) includes analyst forecasts sourced from Bloomberg.
 
 # Data source
 

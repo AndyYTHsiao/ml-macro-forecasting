@@ -94,7 +94,7 @@ def calculate_mutual_information(
     top_k: int | None = None,
     random_state: int = 42,
     threshold: float = 0.1,
-) -> pd.DataFrame:
+) -> pd.Series:
     """
     Calculate mutual information with the target variable.
 
@@ -106,7 +106,7 @@ def calculate_mutual_information(
         threshold (float): Minimum mutual information value to keep a feature.
 
     Returns:
-        pd.DataFrame: DataFrame with features that have mutual information above the threshold.
+        pd.Series: Series with features that have mutual information above the threshold.
     """
     mi_scores = mutual_info_regression(x, y, random_state=random_state)
     mi_scores = pd.Series(mi_scores, index=x.columns)
