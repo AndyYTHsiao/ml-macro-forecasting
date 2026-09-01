@@ -1,6 +1,5 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
 
 
 class MLPModel(nn.Module):
@@ -9,7 +8,6 @@ class MLPModel(nn.Module):
         input_size: int,
         hidden_sizes: list[int],
         output_size: int,
-        task: str = "regression",
     ) -> None:
         """
         A simple Multi-Layer Perceptron (MLP) model.
@@ -18,11 +16,8 @@ class MLPModel(nn.Module):
             input_size (int): Number of input features.
             hidden_sizes (list[int]): List of hidden layer sizes.
             output_size (int): Number of output features.
-            task (str): Type of task - "regression", "binary", or "multiclass".
         """
         super().__init__()
-        assert task in {"regression", "binary", "multiclass"}, "Invalid task type"
-        self.task = task
 
         layers = []
         for hidden_size in hidden_sizes:
@@ -44,7 +39,7 @@ class MLPModel(nn.Module):
             x (torch.Tensor): Input tensor of shape (batch_size, input_size).
 
         Returns:
-            torch.Tensor: Output tensor after applying the model and activation function based on the task.
+            torch.Tensor: Output tensor after applying the model and activation function.
         """
         return self.model(x)
 
@@ -56,7 +51,6 @@ class LSTMModel(nn.Module):
         hidden_size: int,
         num_layers: int,
         output_size: int,
-        task: str = "regression",
         dropout: float = 0.0,
         bidirectional: bool = False,
     ) -> None:
@@ -68,13 +62,11 @@ class LSTMModel(nn.Module):
             hidden_size (int): Number of features in the hidden state.
             num_layers (int): Number of recurrent layers.
             output_size (int): Number of output features.
-            task (str): Type of task - "regression", "binary", or "multiclass".
             dropout (float): Dropout probability for the LSTM layers.
             bidirectional (bool): If True, becomes a bidirectional LSTM.
         """
         super().__init__()
-        assert task in {"regression", "binary", "multiclass"}, "Invalid task type"
-        self.task = task
+
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bidirectional = bidirectional
@@ -99,34 +91,12 @@ class LSTMModel(nn.Module):
             x (torch.Tensor): Input tensor of shape (batch_size, seq_length, input_size).
 
         Returns:
-            torch.Tensor: Output tensor after applying the model and activation function based on the task.
+            torch.Tensor: Output tensor after applying the model and activation function.
         """
         self.lstm.flatten_parameters()
         lstm_out, _ = self.lstm(x)
-        logits = self.fc(lstm_out[:, -1, :])  # (B, output_size)
 
-        return logits
-
-
-def logit_to_output(logits: torch.Tensor, task: str) -> torch.Tensor:
-    """
-    Convert logits to final output based on the task.
-
-    Args:
-        logits (torch.Tensor): Raw output from the model.
-        task (str): Type of task - "regression", "binary", or "multiclass".
-
-    Returns:
-        torch.Tensor: Final output after applying the appropriate activation function.
-    """
-    if task == "binary":
-        outputs = torch.sigmoid(logits)
-    elif task == "multiclass":
-        outputs = F.softmax(logits, dim=1)
-    else:
-        outputs = logits.squeeze(-1)
-
-    return outputs
+        return self.fc(lstm_out[:, -1, :])
 
 
 def validate_params(params: dict, required: set[str]) -> None:
@@ -148,7 +118,6 @@ def set_pytorch_model(
     input_size: int,
     output_size: int,
     model_type: str = "mlp",
-    task: str = "regression",
 ) -> nn.Module:
     """
     Set up a PyTorch model based on the provided parameters.
@@ -159,8 +128,6 @@ def set_pytorch_model(
         input_size (int): Number of input features.
         output_size (int): Number of output features.
         model_type (str): Type of model to initialize - "mlp" or "lstm".
-        task (str): Type of task - "regression", "binary", or "multiclass".
-        return_logits (bool): If True, model returns raw logits.
 
     Returns:
         nn.Module: Initialized PyTorch model.
@@ -173,7 +140,6 @@ def set_pytorch_model(
             input_size=input_size,
             hidden_sizes=params["hidden_sizes"],
             output_size=output_size,
-            task=task,
         )
     elif model_type == "lstm":
         required_keys = {
@@ -187,29 +153,8 @@ def set_pytorch_model(
             hidden_size=params["hidden_size"],
             num_layers=params["num_layers"],
             output_size=output_size,
-            task=task,
             dropout=params.get("dropout", 0.0),
             bidirectional=params.get("bidirectional", False),
         )
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
-
-
-def set_loss_fn(task: str = "regression") -> nn.Module:
-    """
-    Set up the appropriate loss function based on the task.
-
-    Args:
-        task (str): Type of task - "regression", "binary", or "multiclass".
-
-    Returns:
-        nn.Module: Appropriate loss function.
-    """
-    if task == "regression":
-        return nn.MSELoss()
-    elif task == "binary":
-        return nn.BCEWithLogitsLoss()
-    elif task == "multiclass":
-        return nn.CrossEntropyLoss()
-    else:
-        raise ValueError(f"Unsupported task: {task}")

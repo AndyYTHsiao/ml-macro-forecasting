@@ -1,8 +1,52 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 import torch
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.feature_selection import mutual_info_regression
+from torch.utils.data import DataLoader, TensorDataset
+
+
+class FeatureSelector:
+    """Select features using training observations only.
+
+    Keeping ``fit`` separate from ``transform`` makes the temporal boundary
+    explicit and prevents target information from the test period influencing
+    feature selection.
+    """
+
+    def __init__(self, mi_threshold: float = 0.1, corr_threshold: float = 0.9):
+        self.mi_threshold = mi_threshold
+        self.corr_threshold = corr_threshold
+        self.selected_features_: list[str] | None = None
+
+    def fit(self, x: pd.DataFrame, y: pd.Series | np.ndarray) -> "FeatureSelector":
+        mi_scores = calculate_mutual_information(
+            x, pd.Series(y, index=x.index), threshold=self.mi_threshold
+        )
+        if mi_scores.empty:
+            raise ValueError("No features passed the mutual-information threshold.")
+        selected = correlation_clustering(
+            x[mi_scores.index], mi_scores, threshold=self.corr_threshold
+        )
+        self.selected_features_ = selected.columns.tolist()
+        return self
+
+    def transform(self, x: pd.DataFrame) -> np.ndarray:
+        if self.selected_features_ is None:
+            raise RuntimeError("FeatureSelector must be fitted before transform().")
+        return x.loc[:, self.selected_features_].to_numpy()
+
+    def fit_transform(self, x: pd.DataFrame, y: pd.Series | np.ndarray) -> np.ndarray:
+        return self.fit(x, y).transform(x)
+
+
+def load_data(data_path: str, target_col: str) -> tuple[pd.DataFrame, pd.Series]:
+    """Load a time-ordered feature frame and target without fitting transforms."""
+    data = pd.read_csv(data_path, index_col=0, parse_dates=True)
+    if target_col not in data:
+        raise ValueError(f"Target column {target_col!r} was not found.")
+    if not data.index.is_monotonic_increasing:
+        data = data.sort_index()
+    return data.drop(columns=[target_col]), data[target_col]
 
 
 def correlation_clustering(
@@ -45,20 +89,26 @@ def correlation_clustering(
 
 
 def calculate_mutual_information(
-    x: pd.DataFrame, y: pd.Series, top_k: int | None = None, threshold: float = 0.1
-) -> pd.DataFrame:
+    x: pd.DataFrame,
+    y: pd.Series,
+    top_k: int | None = None,
+    random_state: int = 42,
+    threshold: float = 0.1,
+) -> pd.Series:
     """
     Calculate mutual information with the target variable.
 
     Parameters:
         x (pd.DataFrame): Feature DataFrame.
         y (pd.Series): Target variable.
+        top_k (int | None): Number of top features to select based on mutual information.
+        random_state (int): Random state for reproducibility.
         threshold (float): Minimum mutual information value to keep a feature.
 
     Returns:
-        pd.DataFrame: DataFrame with features that have mutual information above the threshold.
+        pd.Series: Series with features that have mutual information above the threshold.
     """
-    mi_scores = mutual_info_regression(x, y)
+    mi_scores = mutual_info_regression(x, y, random_state=random_state)
     mi_scores = pd.Series(mi_scores, index=x.columns)
 
     if top_k is None:
@@ -70,6 +120,7 @@ def calculate_mutual_information(
 def load_and_filter_data(
     data_path: str,
     target_col: str,
+    fit_size: int,
     mi_threshold: float,
     corr_threshold: float,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -79,20 +130,20 @@ def load_and_filter_data(
     Parameters:
         data_path (str): Path to the CSV file containing the dataset.
         target_col (str): Name of the target column in the dataset.
+        fit_size (int): Number of leading (training) rows used to fit selection.
         mi_threshold (float): Threshold for mutual information feature selection.
         corr_threshold (float): Threshold for correlation clustering.
 
     Returns:
         tuple[np.ndarray, np.ndarray]: Preprocessed data (X, y).
     """
-    data = pd.read_csv(data_path, index_col=0, parse_dates=True)
-    y = data[target_col].values
-    X = data.drop(columns=[target_col])
-    mi_scores = calculate_mutual_information(X, y, threshold=mi_threshold)
-    X = X[mi_scores.index]
-    X = correlation_clustering(X, mi_scores, threshold=corr_threshold).values
+    X, y = load_data(data_path, target_col)
+    if not 0 < fit_size <= len(X):
+        raise ValueError("fit_size must be between 1 and the number of rows.")
+    selector = FeatureSelector(mi_threshold, corr_threshold)
+    selector.fit(X.iloc[:fit_size], y.iloc[:fit_size])
 
-    return X, y
+    return selector.transform(X), y.to_numpy()
 
 
 def create_sequences(
@@ -128,7 +179,16 @@ def create_sequences(
 
     if n != len(y):
         raise ValueError("X and y must have the same length.")
-    if n <= lookback + gap + forecast_horizon:
+
+    if lookback <= 0 or forecast_horizon <= 0 or gap < 0:
+        raise ValueError(
+            "lookback and forecast_horizon must be positive; gap cannot be negative."
+        )
+
+    if return_type not in {"np", "pt"}:
+        raise ValueError("return_type must be either 'np' or 'pt'.")
+
+    if n < lookback + gap + forecast_horizon:
         raise ValueError("Not enough data for given lookback/gap/horizon.")
 
     Xs, ys = [], []
@@ -185,8 +245,9 @@ def set_up_dataloader(
         train_loader (DataLoader): DataLoader for training data.
         test_loader (DataLoader): DataLoader for testing data.
     """
-    X_train_tensor, y_train_tensor = X_train_tensor.to(device), y_train_tensor.to(
-        device
+    X_train_tensor, y_train_tensor = (
+        X_train_tensor.to(device),
+        y_train_tensor.to(device),
     )
     X_test_tensor, y_test_tensor = X_test_tensor.to(device), y_test_tensor.to(device)
 

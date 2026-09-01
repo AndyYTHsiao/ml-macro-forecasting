@@ -1,68 +1,20 @@
-import torch.nn as nn
+from optuna.samplers import BaseSampler, CmaEsSampler, TPESampler
 from sklearn.base import BaseEstimator
-from sklearn.linear_model import ElasticNet, LogisticRegression
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.svm import SVR, SVC
-from xgboost import XGBRegressor, XGBClassifier
-from typing import Type
-from optuna.samplers import BaseSampler, TPESampler, CmaEsSampler
-from ..models.pytorch_models import MLPModel, LSTMModel
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import ElasticNet
+from sklearn.svm import SVR
+from torch import nn
+from xgboost import XGBRegressor
+
+from ..models.pytorch_models import LSTMModel, MLPModel
 
 MODEL_REGISTRY = {
-    "linear": {
-        "sklearn": {
-            "regression": ElasticNet,
-            "binary": LogisticRegression,
-            "multiclass": LogisticRegression,
-        },
-        "requires_scaling": True,
-    },
-    "random_forest": {
-        "sklearn": {
-            "regression": RandomForestRegressor,
-            "binary": RandomForestClassifier,
-            "multiclass": RandomForestClassifier,
-        },
-    },
-    "svm": {
-        "sklearn": {
-            "regression": SVR,
-            "binary": SVC,
-            "multiclass": SVC,
-        },
-        "requires_scaling": True,
-    },
-    "xgboost": {
-        "sklearn": {
-            "regression": XGBRegressor,
-            "binary": XGBClassifier,
-            "multiclass": XGBClassifier,
-        }
-    },
-    "mlp": {
-        "torch": {
-            "regression": MLPModel,
-            "binary": MLPModel,
-            "multiclass": MLPModel,
-        }
-    },
-    "lstm": {
-        "torch": {
-            "regression": LSTMModel,
-            "binary": LSTMModel,
-            "multiclass": LSTMModel,
-        }
-    },
-}
-
-
-SAMPLER_REGISTRY = {
-    "linear": {"regression": TPESampler, "classification": TPESampler},
-    "random_forest": {"regression": TPESampler, "classification": TPESampler},
-    "svm": {"regression": CmaEsSampler, "classification": CmaEsSampler},
-    "xgboost": {"regression": TPESampler, "classification": TPESampler},
-    "mlp": {"regression": TPESampler, "classification": TPESampler},
-    "lstm": {"regression": TPESampler, "classification": TPESampler},
+    "linear": {"sklearn": ElasticNet, "requires_scaling": True},
+    "random_forest": {"sklearn": RandomForestRegressor},
+    "svm": {"sklearn": SVR, "requires_scaling": True},
+    "xgboost": {"sklearn": XGBRegressor},
+    "mlp": {"torch": MLPModel, "requires_scaling": True},
+    "lstm": {"torch": LSTMModel, "requires_scaling": True},
 }
 
 
@@ -80,23 +32,22 @@ def requires_scaling(model_type: str) -> bool:
 
 
 def get_model_class(
-    model_type: str, framework: str, task: str
-) -> Type[BaseEstimator] | Type[nn.Module]:
+    model_type: str, framework: str
+) -> type[BaseEstimator] | type[nn.Module]:
     """
     Look up the model class from the registry.
 
     Args:
         model_type (str): Type of model, e.g., "linear", "random_forest", "svm", "xgboost", "mlp", "lstm"
         framework (str): Framework, e.g., "sklearn", "xgboost", "torch"
-        task (str): Task type, e.g., "regression", "binary", "multiclass"
 
     Returns:
-        Type[BaseEstimator] | Type[nn.Module]: The model class.
+        type[BaseEstimator] | type[nn.Module]: The model class.
     """
     try:
-        return MODEL_REGISTRY[model_type][framework][task]
-    except KeyError:
-        raise ValueError(f"No model found for {model_type=}, {framework=}, {task=}")
+        return MODEL_REGISTRY[model_type][framework]
+    except KeyError as exc:
+        raise ValueError(f"No model found for {model_type=}, {framework=}") from exc
 
 
 def get_sampler(model_type: str, seed: int = 42) -> BaseSampler:
@@ -112,9 +63,11 @@ def get_sampler(model_type: str, seed: int = 42) -> BaseSampler:
     """
     if model_type == "svm":
         return CmaEsSampler(seed=seed, sigma0=1.0, warn_independent_sampling=False)
-    elif model_type == "random_forest":
+
+    if model_type == "random_forest":
         return TPESampler(seed=seed, multivariate=True, constant_liar=True)
-    elif model_type in ["xgboost", "linear"]:
+
+    if model_type in {"xgboost", "linear"}:
         return TPESampler(seed=seed, multivariate=True, n_startup_trials=20)
-    else:
-        return TPESampler(seed=seed)
+
+    return TPESampler(seed=seed)
